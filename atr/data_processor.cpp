@@ -1,316 +1,183 @@
 #include <iostream>
 #include <cstdlib>
 #include <chrono>
+#include <ctime>
 #include <thread>
 #include <unistd.h>
-#include <bson.h>
-#include <mongoc.h>
-#include "json.hpp"
-#include "mqtt/client.h"
-#include <fstream>
+#include "json.hpp" // Biblioteca para manipulação de JSON (nlohmann::json)
+#include "mqtt/client.h" // Biblioteca Paho MQTT para comunicação MQTT
+#include <iomanip>
+#include <curl/curl.h> // Biblioteca CURL para realizar requisições HTTP
 
-#define QOS 1
-#define BROKER_ADDRESS "tcp://localhost:1883"
+#define QOS 1 // Qualidade do Serviço (QoS) para as mensagens MQTT
+#define BROKER_ADDRESS "tcp://localhost:1883" // Endereço do broker MQTT
+#define INIT_MESSAGE_INTERVAL 60 // Intervalo para publicar a mensagem inicial em segundos
+#define API_KEY "452ed16bb510843623b6b138b616351f" // Chave da API do OpenWeatherMap
+#define CITY_ID "3470127" // ID da cidade do OpenWeatherMap
 
-class Activity
-{
-public:
-    std::string sensor_id;
-    std::string time_limit;
-    Activity(const std::string &id, const std::string &limit) : sensor_id(id), time_limit(limit) {}
-};
-
-Activity activityDisk("diskUsage", "");
-Activity activityRam("ramMemoryUsage", "");
-double moveMeanDisk = NULL;
-double moveMeanRam = NULL;
-void insert_document(mongoc_collection_t *collection, std::string machine_id, std::string timestamp_str, int value, double moveMean)
-{
-    bson_error_t error;
-    bson_oid_t oid;
-    bson_t *doc;
-
-    std::tm tm{};
-    std::istringstream ss{timestamp_str};
-    ss >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%SZ");
-    std::time_t time_t_timestamp = std::mktime(&tm);
-
-    doc = bson_new();
-    BSON_APPEND_UTF8(doc, "machine_id", machine_id.c_str());
-    BSON_APPEND_TIME_T(doc, "timestamp", time_t_timestamp);
-    BSON_APPEND_INT32(doc, "value", value);
-    BSON_APPEND_DOUBLE(doc, "moveMean", moveMean);
-
-    if (!mongoc_collection_insert_one(collection, doc, NULL, NULL, &error))
-    {
-        std::cerr << "Failed to insert doc: " << error.message << std::endl;
-    }
-
-    bson_destroy(doc);
+// Função para obter o timestamp atual no formato ISO 8601
+std::string getCurrentTimestamp() {
+    auto now = std::chrono::system_clock::now();
+    std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+    std::tm* now_tm = std::gmtime(&now_c);
+    std::stringstream ss;
+    ss << std::put_time(now_tm, "%FT%TZ");
+    return ss.str();
 }
 
-void insert_alarms(mongoc_collection_t *alarmCollection, std::string sensor_id, std::string machine_id, std::string description)
-{
-    bson_error_t error;
-    bson_t *doc;
-
-    doc = bson_new();
-    BSON_APPEND_UTF8(doc, "sensor_id", sensor_id.c_str());
-    BSON_APPEND_UTF8(doc, "machine_id", machine_id.c_str());
-    BSON_APPEND_UTF8(doc, "description", description.c_str());
-
-    if (!mongoc_collection_insert_one(alarmCollection, doc, NULL, NULL, &error))
-    {
-        std::cerr << "Failed to insert doc: " << error.message << std::endl;
+// Callback para escrever a resposta da requisição HTTP no buffer
+size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* s) {
+    size_t newLength = size * nmemb;
+    try {
+        s->append((char*)contents, newLength);
+    } catch(std::bad_alloc &e) {
+        // Tratar problema de memória
+        return 0;
     }
-
-    bson_destroy(doc);
+    return newLength;
 }
 
-std::vector<std::string> split(const std::string &str, char delim)
-{
-    std::vector<std::string> tokens;
-    std::string token;
-    std::istringstream tokenStream(str);
-    while (std::getline(tokenStream, token, delim))
-    {
-        tokens.push_back(token);
+// Função para obter dados climáticos da API do OpenWeatherMap
+nlohmann::json getWeatherData() {
+    CURL* curl;
+    CURLcode res;
+    std::string readBuffer;
+
+    curl = curl_easy_init(); // Inicializa a sessão CURL
+    if(curl) {
+        std::string url = "http://api.openweathermap.org/data/2.5/weather?id=" + std::string(CITY_ID) + "&appid=" + std::string(API_KEY) + "&units=metric";
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str()); // Define a URL da requisição
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback); // Define o callback para escrever os dados recebidos
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer); // Define o buffer para armazenar a resposta
+        res = curl_easy_perform(curl); // Executa a requisição
+
+        // Limpa a sessão CURL
+        curl_easy_cleanup(curl);
+
+        if(res != CURLE_OK) {
+            std::cerr << "curl_easy_perform() failed: " << curl_easy_strerror(res) << std::endl;
+        } else {
+            return nlohmann::json::parse(readBuffer); // Parsea a resposta JSON e retorna
+        }
     }
-    return tokens;
+    return nullptr;
 }
 
-void save_initial_message(nlohmann::json msg)
-{
-    std::ofstream file("initial_message.json", std::ofstream::trunc);
+nlohmann::json getUvIndexData() {
+    CURL* curl;
+    CURLcode res;
+    std::string readBuffer;
 
-    if (!file.is_open())
-    {
-        std::cerr << "Erro ao abrir o arquivo de mensagem inicial." << std::endl;
+    curl = curl_easy_init(); // Inicializa a sessão CURL
+    if(curl) {
+        std::string url = "http://api.openweathermap.org/data/2.5/onecall?lat=LATITUDE&lon=LONGITUDE&exclude=hourly,daily&appid=" + std::string(API_KEY);
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str()); // Define a URL da requisição
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback); // Define o callback para escrever os dados recebidos
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer); // Define o buffer para armazenar a resposta
+        res = curl_easy_perform(curl); // Executa a requisição
+
+        // Limpa a sessão CURL
+        curl_easy_cleanup(curl);
+
+        if(res != CURLE_OK) {
+            std::cerr << "curl_easy_perform() failed: " << curl_easy_strerror(res) << std::endl;
+        } else {
+            return nlohmann::json::parse(readBuffer); // Parsea a resposta JSON e retorna
+        }
     }
-
-    file << msg.dump();
-
-    file.close();
+    return nullptr;
 }
 
-bool set_activity_alarm(Activity &sensorActivity, time_t newTimeT)
-{
-    std::tm tm = {};
-    std::istringstream ss(sensorActivity.time_limit);
-    ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
-
-    if (ss.fail())
-    {
-        std::cerr << "Erro ao converter a string para time_t." << std::endl;
-        return false;
-    }
-
-    std::time_t time = std::mktime(&tm);
-
-    if (newTimeT >= time)
-    {
-        activityDisk.time_limit = "";
-        return true;
-    }
-    else
-    {
-        // Converte o novo tempo para uma representação de string
-        std::tm *newTimeTM = std::gmtime(&newTimeT);
-        std::stringstream ss;
-        ss << std::put_time(newTimeTM, "%Y-%m-%d %H:%M:%S");
-        std::string newTimeString = ss.str();
-        activityDisk.time_limit = newTimeString;
-        return false;
-    }
-}
-
-void verify_activity(mongoc_collection_t *alarmCollection, std::string sensor_id, std::string machine_id)
-{
-    auto currentTime = std::chrono::system_clock::now();
-
-    std::ifstream file("initial_message.json");
-
-    if (!file.is_open())
-    {
-        std::cerr << "Erro ao abrir o arquivo de configuração." << std::endl;
-    }
-
-    nlohmann::json config;
-    file >> config;
-    file.close();
-
-    int timespan;
-    for (const auto &obj : config["sensors"])
-    {
-        std::string id = obj["sensor_id"];
-        if (id == sensor_id)
-        {
-            timespan = obj["data_interval"];
-        }
-    }
-
-    // Adiciona os segundos ao tempo atual
-    auto newTime = currentTime + std::chrono::seconds(timespan * 10);
-    std::time_t newTimeT = std::chrono::system_clock::to_time_t(newTime);
-    std::string description = "Sensor inativo por dez períodos de tempo previstos";
-    if (sensor_id == "diskUsage")
-    {
-        int isAlarm = set_activity_alarm(activityDisk, newTimeT);
-        if (isAlarm)
-        {
-            insert_alarms(alarmCollection, sensor_id, machine_id, description);
-            mongoc_collection_destroy(alarmCollection);
-        }
-    }
-    else if (sensor_id == "ramMemoryUsage")
-    {
-        int isAlarm = set_activity_alarm(activityRam, newTimeT);
-        if (isAlarm)
-        {
-            insert_alarms(alarmCollection, sensor_id, machine_id, description);
-            mongoc_collection_destroy(alarmCollection);
-        }
-    }
-}
-
-void verify_alarms(mongoc_collection_t *alarmCollection, std::string sensor_id, std::string machine_id, int value)
-{
-    std::string description;
-    bool setAlarm = false;
-    if (sensor_id == "ramMemoryUsage")
-    {
-        if (value > 85)
-        {
-            description = "Porcentagem de memória RAM utilizada está acima do ideal";
-            setAlarm = true;
-        }
-        else if (value < 65)
-        {
-            description = "Porcentagem de memória RAM utilizada está abaixo do ideal";
-            setAlarm = true;
-        }
-    }
-    else if (sensor_id == "diskUsage")
-    {
-        if (value > 80)
-        {
-            description = "Porcentagem de uso de disco está acima do ideal";
-            setAlarm = true;
-        }
-    }
-    if (setAlarm)
-    {
-        insert_alarms(alarmCollection, sensor_id, machine_id, description);
-        mongoc_collection_destroy(alarmCollection);
-    }
-}
-
-double moveMeanCalc(std::string sensor_id, double value)
-{
-    double result = value;
-    if (sensor_id == "diskUsage")
-    {
-        if(moveMeanDisk == NULL){
-            return result;
-        }
-        else
-        {
-            result = ((moveMeanDisk + value)/2);
-            moveMeanDisk = result;
-            return result;
-        }
-    }
-    else if (sensor_id == "ramMemoryUsage")
-    {
-        if(moveMeanRam == NULL){
-            return result;
-        }
-        else
-        {
-            result = ((moveMeanRam + value)/2);
-            moveMeanRam = result;
-            return result;
-        }
-    }
-}
-
-int main(int argc, char *argv[])
-{
-    std::string clientId = "clientId";
+int main(int argc, char* argv[]) {
+    std::string clientId = "sensor-monitor"; // ID do cliente MQTT
     mqtt::client client(BROKER_ADDRESS, clientId);
 
-    // Initialize MongoDB client and connect to the database.
-    mongoc_init();
-    mongoc_client_t *mongodb_client = mongoc_client_new("mongodb://localhost:27017");
-    mongoc_database_t *database = mongoc_client_get_database(mongodb_client, "sensors_data"); // replace with your database name
-
-    // Create an MQTT callback.
-    class callback : public virtual mqtt::callback
-    {
-        mongoc_database_t *db;
-
-    public:
-        callback(mongoc_database_t *db) : db(db) {}
-
-        void message_arrived(mqtt::const_message_ptr msg) override
-        {
-            auto j = nlohmann::json::parse(msg->get_payload());
-
-            std::string topic = msg->get_topic();
-            if (topic == "/sensor_monitors")
-            {
-                save_initial_message(j);
-            }
-            else
-            {
-                auto topic_parts = split(topic, '/');
-                std::string machine_id = topic_parts[2];
-                std::string sensor_id = topic_parts[3];
-                std::string timestamp = j["timestamp"];
-                int value = j["value"];
-                double moveMean = moveMeanCalc(sensor_id, j["value"]);
-
-                // Get collection and persist the document.
-                mongoc_collection_t *collection = mongoc_database_get_collection(db, sensor_id.c_str());
-                std::string alarm = "alarms";
-                mongoc_collection_t *alarmCollection = mongoc_database_get_collection(db, alarm.c_str());
-                verify_activity(alarmCollection, sensor_id, machine_id);
-                verify_alarms(alarmCollection, sensor_id, machine_id, value);
-                insert_document(collection, machine_id, timestamp, value, moveMean);
-                mongoc_collection_destroy(collection);
-            }
-        }
-    };
-
-    callback cb(database);
-    client.set_callback(cb);
-
-    // Connect to the MQTT broker.
+    // Conecta ao broker MQTT
     mqtt::connect_options connOpts;
-    connOpts.set_keep_alive_interval(20);
-    connOpts.set_clean_session(true);
+    connOpts.set_keep_alive_interval(20); // Intervalo de keep alive
+    connOpts.set_clean_session(true); // Inicia uma sessão limpa
 
-    try
-    {
-        client.connect(connOpts);
-        client.subscribe("/sensor_monitors", QOS);
-        client.subscribe("/sensors/#", QOS);
-    }
-    catch (mqtt::exception &e)
-    {
+    try {
+        client.connect(connOpts); // Tenta conectar ao broker
+    } catch (mqtt::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
         return EXIT_FAILURE;
     }
+    std::clog << "Connected to the broker" << std::endl;
 
-    while (true)
-    {
+    // Obtém o identificador único da máquina, neste caso, o hostname.
+    char hostname[1024];
+    gethostname(hostname, 1024);
+    std::string machineId(hostname);
+
+    // Mensagem inicial de configuração
+    auto lastInitMessageTime = std::chrono::system_clock::now() - std::chrono::seconds(INIT_MESSAGE_INTERVAL);
+
+    while (true) {
+        auto now = std::chrono::system_clock::now();
+
+        // Publica a mensagem inicial de configuração a cada INIT_MESSAGE_INTERVAL segundos.
+        if (std::chrono::duration_cast<std::chrono::seconds>(now - lastInitMessageTime).count() >= INIT_MESSAGE_INTERVAL) {
+            nlohmann::json initMsg;
+            initMsg["machine_id"] = machineId;
+            initMsg["sensors"] = {
+                { {"sensor_id", "temperature"}, {"data_type", "float"}, {"data_interval", 1000} },
+                { {"sensor_id", "humidity"}, {"data_type", "float"}, {"data_interval", 1000} }
+                { {"sensor_id", "uv_index"}, {"data_type", "float"}, {"data_interval", 1000} }
+            };
+
+            mqtt::message initMessage("/sensor_monitors", initMsg.dump(), QOS, false);
+            client.publish(initMessage);
+            std::clog << "Initial configuration message published: " << initMsg.dump() << std::endl;
+
+            lastInitMessageTime = now;
+        }
+
+        // Obtém o timestamp atual no formato ISO 8601.
+        std::string timestamp = getCurrentTimestamp();
+
+        // Obtém os dados climáticos
+        nlohmann::json weatherData = getWeatherData();
+        float temperature = weatherData["main"]["temp"];
+        float humidity = weatherData["main"]["humidity"];
+
+        // Obtenha o índice UV
+        nlohmann::json uvIndexData = getUvIndexData();
+        float uvIndex = uvIndexData["current"]["uvi"];
+
+        // Constrói as mensagens JSON.
+        nlohmann::json tempMsg;
+        tempMsg["timestamp"] = timestamp;
+        tempMsg["value"] = temperature;
+
+        nlohmann::json humidityMsg;
+        humidityMsg["timestamp"] = timestamp;
+        humidityMsg["value"] = humidity;
+
+
+        nlohmann::json uvIndexMsg;
+        uvIndexMsg["timestamp"] = timestamp;
+        uvIndexMsg["value"] = uvIndex;
+
+        // Publica as mensagens JSON nos tópicos apropriados.
+        std::string tempTopic = "/sensors/" + machineId + "/temperature";
+        mqtt::message tempMessage(tempTopic, tempMsg.dump(), QOS, false);
+        client.publish(tempMessage);
+        std::clog << "Temperature message published - topic: " << tempTopic << " - message: " << tempMsg.dump() << std::endl;
+
+        std::string humidityTopic = "/sensors/" + machineId + "/humidity";
+        mqtt::message humidityMessage(humidityTopic, humidityMsg.dump(), QOS, false);
+        client.publish(humidityMessage);
+        std::clog << "Humidity message published - topic: " << humidityTopic << " - message: " << humidityMsg.dump() << std::endl;
+
+        std::string uvIndexTopic = "/sensors/" + machineId + "/uv_index";
+        mqtt::message uvIndexMessage(uvIndexTopic, uvIndexMsg.dump(), QOS, false);
+        client.publish(uvIndexMessage);
+        std::clog << "UV Index message published - topic: " << uvIndexTopic << " - message: " << uvIndexMsg.dump() << std::endl;
+
+        // Dorme por algum tempo.
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
-
-    // Cleanup MongoDB resources
-    mongoc_database_destroy(database);
-    mongoc_client_destroy(mongodb_client);
-    mongoc_cleanup();
 
     return EXIT_SUCCESS;
 }
