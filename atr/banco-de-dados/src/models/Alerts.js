@@ -1,4 +1,4 @@
-const knex = require('knex')(require('../../../knexfile'));
+const knex = require('knex')(require('../../knexfile'));
 
 class AlertModel {
   static async getAll() {

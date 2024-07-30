@@ -1,5 +1,5 @@
-const OutfitModel = require('../routes/models/Outfits');
-const { validateOutfit } = require('../../validators/Outfits');
+const OutfitModel = require('../models/Outfits');
+const { validateOutfit } = require('../validators/Outfits');
 
 class OutfitController {
   // Cria um novo outfit

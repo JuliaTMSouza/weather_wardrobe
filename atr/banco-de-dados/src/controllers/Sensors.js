@@ -1,6 +1,6 @@
 // controllers/sensorController.js
-const SensorModel = require('../src/routes/models/Sensor');
-const { validateSensor } = require('../validators/Sensor');
+const SensorModel = require('../models/Sensors');
+const { validateSensor } = require('../validators/Sensors');
 
 class SensorController {
   // Cria um novo sensor

@@ -1,11 +1,11 @@
 const express = require('express');
 
-const machines = require('./usuario');
-const sensors = require('./treinador');
-const sensorReadings = require('./modalidade');
-const notifications = require('./atleta');
-const outfits = require('./professor');
-const alerts = require('./aluno');
+const machines = require('./machines');
+const sensors = require('./sensors');
+const sensorReadings = require('./sensorReadings');
+const notifications = require('./notifications');
+const outfits = require('./outfits');
+const alerts = require('./alerts');
 
 const routes = express.Router();
 

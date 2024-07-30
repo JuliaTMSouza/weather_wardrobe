@@ -1,6 +1,6 @@
 // controllers/machineController.js
-const MachineModel = require('../routes/models/Machines');
-const { validateMachine } = require('../../validators/Machines');
+const MachineModel = require('../models/Machines');
+const { validateMachine } = require('../validators/Machines');
 
 class MachineController {
   // Cria uma nova máquina

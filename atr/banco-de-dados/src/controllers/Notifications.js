@@ -1,6 +1,6 @@
 // controllers/notificationController.js
-const NotificationModel = require('../src/routes/models/Notification');
-const { validateNotification } = require('../validators/Notification');
+const NotificationModel = require('../models/Notifications');
+const { validateNotification } = require('../validators/Notifications');
 
 class NotificationController {
   // Cria uma nova notificação

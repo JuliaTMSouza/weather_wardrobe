@@ -1,6 +1,6 @@
 // controllers/sensorReadingController.js
-const SensorReadingModel = require('../routes/models/SensorReadings');
-const { validateSensorReading } = require('../../validators/SensorReadings');
+const SensorReadingModel = require('../models/SensorReadings');
+const { validateSensorReading } = require('../validators/SensorReadings');
 
 class SensorReadingController {
   // Cria uma nova leitura de sensor

@@ -1,5 +1,5 @@
 const express = require('express');
-const AlertController = require('../../controllers/Alerts');
+const AlertController = require('../controllers/Alerts');
 
 const router = express.Router();
 

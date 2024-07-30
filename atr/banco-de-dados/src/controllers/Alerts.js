@@ -1,6 +1,6 @@
 // controllers/alertController.js
-const AlertModel = require('../src/routes/models/Alert');
-const { validateAlert } = require('../validators/Alert');
+const AlertModel = require('../models/Alerts');
+const { validateAlert } = require('../validators/Alerts');
 
 class AlertController {
   // Cria um novo alerta
